@@ -23,9 +23,11 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
+from __future__ import annotations
 import asyncio
 import logging
 import struct
+from typing import List, Optional
 
 from pyee import EventEmitter
 
@@ -59,6 +61,7 @@ from .gatt import (
     GATT_PRIMARY_SERVICE_ATTRIBUTE_TYPE,
     GATT_REQUEST_TIMEOUT,
     GATT_SECONDARY_SERVICE_ATTRIBUTE_TYPE,
+    Service,
     Characteristic,
     ClientCharacteristicConfigurationBits,
 )
@@ -73,6 +76,8 @@ logger = logging.getLogger(__name__)
 # Proxies
 # -----------------------------------------------------------------------------
 class AttributeProxy(EventEmitter):
+    client: Client
+
     def __init__(self, client, handle, end_group_handle, attribute_type):
         EventEmitter.__init__(self)
         self.client = client
@@ -101,6 +106,9 @@ class AttributeProxy(EventEmitter):
 
 
 class ServiceProxy(AttributeProxy):
+    uuid: UUID
+    characteristics: List[CharacteristicProxy]
+
     @staticmethod
     def from_client(service_class, client, service_uuid):
         # The service and its characteristics are considered to have already been
@@ -130,6 +138,8 @@ class ServiceProxy(AttributeProxy):
 
 
 class CharacteristicProxy(AttributeProxy):
+    descriptors: List[DescriptorProxy]
+
     def __init__(self, client, handle, end_group_handle, uuid, properties):
         super().__init__(client, handle, end_group_handle, uuid)
         self.uuid = uuid
@@ -201,6 +211,8 @@ class ProfileServiceProxy:
 # GATT Client
 # -----------------------------------------------------------------------------
 class Client:
+    services: List[ServiceProxy]
+
     def __init__(self, connection):
         self.connection = connection
         self.mtu_exchange_done = False
@@ -306,7 +318,7 @@ class Client:
         if not already_known:
             self.services.append(service)
 
-    async def discover_services(self, uuids=None):
+    async def discover_services(self, uuids=None) -> List[ServiceProxy]:
         '''
         See Vol 3, Part G - 4.4.1 Discover All Primary Services
         '''
@@ -332,8 +344,9 @@ class Client:
                         '!!! unexpected error while discovering services: '
                         f'{HCI_Constant.error_name(response.error_code)}'
                     )
-                    # TODO raise appropriate exception
-                    return
+                    raise Exception(
+                        f'unexpected error while discovering services: {HCI_Constant.error_name(response.error_code)}'
+                    )
                 break
 
             for (
@@ -349,7 +362,7 @@ class Client:
                     logger.warning(
                         f'bogus handle values: {attribute_handle} {end_group_handle}'
                     )
-                    return
+                    return []
 
                 # Create a service proxy for this service
                 service = ServiceProxy(
@@ -452,7 +465,9 @@ class Client:
         # TODO
         return []
 
-    async def discover_characteristics(self, uuids, service):
+    async def discover_characteristics(
+        self, uuids, service: Optional[ServiceProxy]
+    ) -> List[CharacteristicProxy]:
         '''
         See Vol 3, Part G - 4.6.1 Discover All Characteristics of a Service and 4.6.2
         Discover Characteristics by UUID
@@ -465,12 +480,12 @@ class Client:
         services = [service] if service else self.services
 
         # Perform characteristic discovery for each service
-        discovered_characteristics = []
+        discovered_characteristics: List[CharacteristicProxy] = []
         for service in services:
             starting_handle = service.handle
             ending_handle = service.end_group_handle
 
-            characteristics = []
+            characteristics: List[CharacteristicProxy] = []
             while starting_handle <= ending_handle:
                 response = await self.send_request(
                     ATT_Read_By_Type_Request(
@@ -491,8 +506,9 @@ class Client:
                             '!!! unexpected error while discovering characteristics: '
                             f'{HCI_Constant.error_name(response.error_code)}'
                         )
-                        # TODO raise appropriate exception
-                        return
+                        raise Exception(
+                            f'!!! unexpected error while discovering characteristics: {HCI_Constant.error_name(response.error_code)}'
+                        )
                     break
 
                 # Stop if for some reason the list was empty
@@ -535,8 +551,11 @@ class Client:
         return discovered_characteristics
 
     async def discover_descriptors(
-        self, characteristic=None, start_handle=None, end_handle=None
-    ):
+        self,
+        characteristic: Optional[CharacteristicProxy] = None,
+        start_handle=None,
+        end_handle=None,
+    ) -> List[DescriptorProxy]:
         '''
         See Vol 3, Part G - 4.7.1 Discover All Characteristic Descriptors
         '''
@@ -549,7 +568,7 @@ class Client:
         else:
             return []
 
-        descriptors = []
+        descriptors: List[DescriptorProxy] = []
         while starting_handle <= ending_handle:
             response = await self.send_request(
                 ATT_Find_Information_Request(
