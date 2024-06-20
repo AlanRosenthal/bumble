@@ -1080,6 +1080,7 @@ _PROXY_CLASS = TypeVar('_PROXY_CLASS', bound=gatt_client.ProfileServiceProxy)
 
 
 class Peer:
+    gatt_client: gatt_client.Client
     def __init__(self, connection: Connection) -> None:
         self.connection = connection
 
@@ -1133,6 +1134,15 @@ class Peer:
     async def discover_attributes(self) -> List[gatt_client.AttributeProxy]:
         return await self.gatt_client.discover_attributes()
 
+    async def discover_all(self):
+        await self.discover_services()
+        for service in self.services:
+            await self.discover_characteristics(service=service)
+        
+        for service in self.services:
+            for characteristic in service.characteristics:
+                await self.discover_descriptors(characteristic=characteristic)
+
     async def subscribe(
         self,
         characteristic: gatt_client.CharacteristicProxy,
@@ -1172,8 +1182,15 @@ class Peer:
         return self.gatt_client.get_services_by_uuid(uuid)
 
     def get_characteristics_by_uuid(
-        self, uuid: core.UUID, service: Optional[gatt_client.ServiceProxy] = None
+        self, uuid: core.UUID, service: Optional[gatt_client.ServiceProxy|core.UUID] = None
     ) -> List[gatt_client.CharacteristicProxy]:
+        if isinstance(service, core.UUID):
+            services = self.get_services_by_uuid(service)
+            characteristics = []
+            for service in services:
+                characteristics.extend(self.get_characteristics_by_uuid(uuid, service))
+            return characteristics
+
         return self.gatt_client.get_characteristics_by_uuid(uuid, service)
 
     def create_service_proxy(self, proxy_class: Type[_PROXY_CLASS]) -> _PROXY_CLASS:
